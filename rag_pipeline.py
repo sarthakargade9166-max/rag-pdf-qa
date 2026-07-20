@@ -134,7 +134,7 @@ def get_answer(context, question):
         "1. Only use information from the context below.\n"
         "2. If the context doesn't have enough info, say so.\n"
         "3. Mention page numbers when possible.\n"
-        "4. Keep answers concise."
+        "4. Give detailed answers in 4-5 lines. Explain clearly, don't be too short."
     )
 
     user_msg = f"CONTEXT:\n---\n{context}\n---\n\nQUESTION: {question}\n\nANSWER:"
