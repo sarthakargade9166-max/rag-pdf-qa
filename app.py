@@ -1,29 +1,19 @@
 import streamlit as st
 from dotenv import load_dotenv
-
 from rag_pipeline import (
-    load_pdf,
-    chunk_documents,
-    get_embedding_model,
-    create_vector_store,
-    load_vector_store,
-    retrieve_chunks,
-    format_context,
-    get_answer,
+    load_pdf, split_into_chunks, get_embeddings,
+    store_in_chroma, load_from_chroma,
+    search_similar, build_context, get_answer,
 )
 
 load_dotenv()
 
-st.set_page_config(
-    page_title="PDF Q&A — RAG Pipeline",
-    page_icon="📄",
-    layout="centered",
-)
+st.set_page_config(page_title="PDF Q&A - RAG", layout="centered")
 
+# some custom css
 st.markdown("""
 <style>
     .block-container { max-width: 760px; padding-top: 2rem; }
-    h1 { color: #1a1a2e; }
     .source-badge {
         display: inline-block;
         background: #e8eaf6;
@@ -47,139 +37,90 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.title("PDF Q&A with RAG")
-st.caption(
-    "Upload a PDF, ask questions, get answers grounded in the document. "
-    "Powered by LangChain · sentence-transformers · ChromaDB · Groq"
-)
+st.caption("Upload a PDF, ask questions, get grounded answers.")
 st.divider()
 
-if "processed" not in st.session_state:
-    st.session_state.processed = False
-if "file_name" not in st.session_state:
-    st.session_state.file_name = None
-if "chunk_count" not in st.session_state:
-    st.session_state.chunk_count = 0
-if "page_count" not in st.session_state:
-    st.session_state.page_count = 0
+# init session state
+if "ready" not in st.session_state:
+    st.session_state.ready = False
+    st.session_state.fname = None
+    st.session_state.num_chunks = 0
+    st.session_state.num_pages = 0
 
+# sidebar - file upload
 with st.sidebar:
-    st.header("Document Upload")
+    st.header("Upload")
+    pdf = st.file_uploader("Choose a PDF", type=["pdf"])
 
-    uploaded_file = st.file_uploader(
-        "Choose a PDF file",
-        type=["pdf"],
-        help="Upload a text-based PDF (scanned images won't work).",
-    )
+    if pdf is not None and st.session_state.fname != pdf.name:
+        with st.spinner("Processing..."):
+            try:
+                docs = load_pdf(pdf)
+            except ValueError as e:
+                st.error(str(e))
+                st.stop()
 
-    if uploaded_file is not None:
-        if st.session_state.file_name != uploaded_file.name:
-            with st.status("Processing PDF...", expanded=True) as status:
+            chunks = split_into_chunks(docs)
+            embed_model = get_embeddings()
+            store_in_chroma(chunks, embed_model, pdf.name)
 
-                st.write("Extracting text from PDF...")
-                try:
-                    documents = load_pdf(uploaded_file)
-                except ValueError as e:
-                    st.error(str(e))
-                    st.stop()
+        st.session_state.ready = True
+        st.session_state.fname = pdf.name
+        st.session_state.num_chunks = len(chunks)
+        st.session_state.num_pages = len(docs)
 
-                page_count = len(documents)
-                st.write(f"Extracted text from {page_count} pages")
-
-                st.write("Splitting into chunks...")
-                chunks = chunk_documents(documents)
-                chunk_count = len(chunks)
-                st.write(f"Created {chunk_count} chunks")
-
-                st.write("Generating embeddings (first run downloads the model)...")
-                embedding_model = get_embedding_model()
-
-                st.write("Storing in ChromaDB...")
-                vector_store = create_vector_store(
-                    chunks, embedding_model, uploaded_file.name
-                )
-                st.write("Indexed and ready.")
-
-                status.update(label="PDF processed", state="complete")
-
-            st.session_state.processed = True
-            st.session_state.file_name = uploaded_file.name
-            st.session_state.chunk_count = chunk_count
-            st.session_state.page_count = page_count
-
-    if st.session_state.processed:
+    if st.session_state.ready:
         st.divider()
         st.subheader("Document Info")
-        col1, col2 = st.columns(2)
-        col1.metric("Pages", st.session_state.page_count)
-        col2.metric("Chunks", st.session_state.chunk_count)
-        st.caption(f"**File:** {st.session_state.file_name}")
+        c1, c2 = st.columns(2)
+        c1.metric("Pages", st.session_state.num_pages)
+        c2.metric("Chunks", st.session_state.num_chunks)
+        st.caption(f"**File:** {st.session_state.fname}")
 
-if not st.session_state.processed:
+# main area
+if not st.session_state.ready:
     st.info("Upload a PDF in the sidebar to get started.")
     st.stop()
 
 question = st.text_input(
     "Ask a question about the document:",
-    placeholder="e.g., What are the main findings of this paper?",
+    placeholder="e.g. What are the main findings?",
 )
 
 if question:
-    with st.spinner("Searching document and generating answer..."):
+    with st.spinner("Generating answer..."):
         try:
-            embedding_model = get_embedding_model()
-            vector_store = load_vector_store(
-                embedding_model, st.session_state.file_name
-            )
-            results = retrieve_chunks(question, vector_store, k=4)
+            embed_model = get_embeddings()
+            db = load_from_chroma(embed_model, st.session_state.fname)
+            results = search_similar(question, db, k=4)
 
             if not results:
-                st.warning(
-                    "No relevant sections found in the document for this question. "
-                    "Try rephrasing or asking something more specific.",
-
-                )
+                st.warning("Couldn't find relevant sections. Try rephrasing your question.")
                 st.stop()
 
-            context = format_context(results)
+            context = build_context(results)
             answer = get_answer(context, question)
 
         except EnvironmentError as e:
-            st.error(
-                f"{str(e)}\n\n"
-                "Create a `.env` file in the project root with:\n"
-                "```\nGROQ_API_KEY=gsk_your_key_here\n```"
-            )
+            st.error(f"{e}\n\nAdd your API key to a .env file:\n```\nGROQ_API_KEY=gsk_...\n```")
             st.stop()
         except Exception as e:
-            st.error(f"Something went wrong: {str(e)}")
+            st.error(f"Something went wrong: {e}")
             st.stop()
 
     st.subheader("Answer")
-    st.markdown(
-        f'<div class="answer-box">{answer}</div>',
-        unsafe_allow_html=True,
-    )
+    st.markdown(f'<div class="answer-box">{answer}</div>', unsafe_allow_html=True)
 
+    # show which pages the answer came from
     st.subheader("Sources")
-    source_pages = set()
+    pages = set()
     for doc, score in results:
-        page = doc.metadata.get("page", None)
-        if page is not None:
-            source_pages.add(page + 1)
+        p = doc.metadata.get("page", None)
+        if p is not None:
+            pages.add(p + 1)
 
-    if source_pages:
-        badges = " ".join(
-            f'<span class="source-badge">Page {p}</span>'
-            for p in sorted(source_pages)
-        )
+    if pages:
+        badges = " ".join(f'<span class="source-badge">Page {p}</span>' for p in sorted(pages))
         st.markdown(badges, unsafe_allow_html=True)
     else:
-        st.caption("Page numbers not available in metadata.")
-
-    with st.expander("View retrieved chunks"):
-        for i, (doc, score) in enumerate(results, 1):
-            page = doc.metadata.get("page", "?")
-            page_display = page + 1 if isinstance(page, int) else page
-            st.markdown(f"**Chunk {i}** — Page {page_display} — Similarity: `{score:.4f}`")
-            st.text(doc.page_content[:500] + ("..." if len(doc.page_content) > 500 else ""))
-            st.divider()
+        st.caption("Page numbers not available.")
