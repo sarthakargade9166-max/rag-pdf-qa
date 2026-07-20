@@ -1,0 +1,22 @@
+# Core framework
+streamlit>=1.36.0
+langchain>=0.3.0
+langchain-community>=0.3.0
+langchain-core>=0.3.0
+
+# PDF parsing (PyMuPDF engine)
+pymupdf>=1.24.0
+
+# Embeddings — runs locally, no API key needed
+langchain-huggingface>=0.1.0
+sentence-transformers>=3.0.0
+
+# Vector store
+langchain-chroma>=0.2.0
+chromadb>=0.5.0
+
+# LLM provider (swap to langchain-openai if using GPT)
+langchain-groq>=0.2.0
+
+# Environment variable management
+python-dotenv>=1.0.0
